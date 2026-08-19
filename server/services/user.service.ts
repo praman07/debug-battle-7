@@ -17,8 +17,23 @@ const sanitizeUser = (userDoc: IUser): AuthResultDTO["user"] => ({
   id: userDoc._id.toString(),
   name: userDoc.name,
   email: userDoc.email,
-  role: userDoc.role,
+  role: userDoc.role || "user",
 });
+
+const isValidEmail = (email: string): boolean =>
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+const validateCredentials = (email: string, password: string): void => {
+  if (!email || !password) {
+    throw new ApiError(400, "Email and password are required");
+  }
+  if (!isValidEmail(email)) {
+    throw new ApiError(400, "A valid email address is required");
+  }
+  if (password.length < 6) {
+    throw new ApiError(400, "Password must be at least 6 characters");
+  }
+};
 
 const issueTokenPair = async (
   userId: string,
@@ -35,9 +50,10 @@ const issueTokenPair = async (
 
 class UserService extends UserContract {
   async register({ name, email, password }: RegisterDTO): Promise<AuthResultDTO> {
-    if (!name || !email || !password) {
+    if (!name) {
       throw new ApiError(400, "Name, email and password are required");
     }
+    validateCredentials(email, password);
 
     const existingUser = await userRepository.findByEmail(email);
     if (existingUser) {
@@ -47,14 +63,15 @@ class UserService extends UserContract {
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = await userRepository.create({ name, email, password: hashedPassword });
 
-    const { accessToken, refreshToken } = await issueTokenPair(newUser._id.toString(), newUser.role);
+    const { accessToken, refreshToken } = await issueTokenPair(
+      newUser._id.toString(),
+      newUser.role || "user"
+    );
     return { user: sanitizeUser(newUser), accessToken, refreshToken };
   }
 
   async login({ email, password }: LoginDTO): Promise<AuthResultDTO> {
-    if (!email || !password) {
-      throw new ApiError(400, "Email and password are required");
-    }
+    validateCredentials(email, password);
 
     const user = await userRepository.findByEmail(email);
     if (!user) {
@@ -66,7 +83,10 @@ class UserService extends UserContract {
       throw new ApiError(401, "Invalid email or password");
     }
 
-    const { accessToken, refreshToken } = await issueTokenPair(user._id.toString(), user.role);
+    const { accessToken, refreshToken } = await issueTokenPair(
+      user._id.toString(),
+      user.role || "user"
+    );
     return { user: sanitizeUser(user), accessToken, refreshToken };
   }
 
@@ -96,7 +116,7 @@ class UserService extends UserContract {
     await refreshTokenRepository.deleteByTokenHash(tokenHash);
     const { accessToken, refreshToken: newRefreshToken } = await issueTokenPair(
       user._id.toString(),
-      user.role
+      user.role || "user"
     );
 
     return { accessToken, refreshToken: newRefreshToken };

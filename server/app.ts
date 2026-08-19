@@ -1,7 +1,9 @@
 import express, { Application, Request, Response } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+const { apiReference } = require("@scalar/express-api-reference");
 import routes from "./routes";
+import openapiSpec from "./openapi/openapi.json";
 import { errorHandler, notFound } from "./middlewares/error.middleware";
 
 const app: Application = express();
@@ -19,6 +21,17 @@ app.use(cookieParser());
 app.get("/", (_req: Request, res: Response) => {
   res.json({ success: true, message: "E-commerce backend is running" });
 });
+
+app.get("/openapi.json", (_req: Request, res: Response) => {
+  res.json(openapiSpec);
+});
+
+app.use(
+  "/api-docs",
+  apiReference({
+    spec: { content: openapiSpec },
+  })
+);
 
 app.use("/api", routes);
 

@@ -1,0 +1,879 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "E-commerce Backend API",
+    "version": "1.0.0",
+    "description": "Express + MongoDB e-commerce API with JWT access/refresh token authentication.\n\n## Authentication\n\n- **Access token** — short-lived JWT (default 15m). Sent as `Authorization: Bearer <token>` on protected endpoints (cart, orders, admin product routes). Stateless, verified by signature.\n- **Refresh token** — long-lived JWT (default 30d). Returned at register/login. **Not** sent as a Bearer header — it is passed in the request body (`{ \"refreshToken\": \"...\" }`) to `/api/users/refresh-token` and `/api/users/logout`.\n- **Rotation** — every call to `/api/users/refresh-token` revokes the presented refresh token and issues a brand new access + refresh pair. Store the new refresh token and discard the old one.\n\nEvery successful response uses the envelope `{ \"success\": true, \"statusCode\": <number>, \"data\": <payload>, \"message\": \"...\" }`. Errors use `{ \"success\": false, \"message\": \"...\" }` with an appropriate HTTP status.\n\n## Roles\n\n- `user` — can browse products, manage their own cart, place orders.\n- `admin` — everything a user can do, plus product create/update/delete. There is no \"make admin\" API by design; promote a user document in the database manually."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5000",
+      "description": "Local development server"
+    }
+  ],
+  "tags": [
+    { "name": "Users", "description": "Registration, login, token refresh and logout" },
+    { "name": "Products", "description": "Product catalog (public) and admin CRUD" },
+    { "name": "Cart", "description": "Authenticated user's shopping cart" },
+    { "name": "Orders", "description": "Order placement and history" }
+  ],
+  "paths": {
+    "/api/users/register": {
+      "post": {
+        "tags": ["Users"],
+        "summary": "Register a new user",
+        "description": "Creates a user and returns an access + refresh token pair. Also sets httpOnly cookies.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RegisterInput" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "User registered successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RegisterResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing required fields, invalid email format, or password shorter than 6 characters",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "409": {
+            "description": "User with this email already exists",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/login": {
+      "post": {
+        "tags": ["Users"],
+        "summary": "Login",
+        "description": "Authenticates with email + password and returns an access + refresh token pair. Also sets httpOnly cookies.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LoginResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing email or password, invalid email format, or password shorter than 6 characters",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid email or password",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/refresh-token": {
+      "post": {
+        "tags": ["Users"],
+        "summary": "Refresh access token",
+        "description": "Exchanges a valid refresh token (in the request body) for a new access + refresh token pair. The presented refresh token is revoked (rotated). This endpoint does NOT use the Authorization header; the refresh token may also be supplied via the httpOnly `refreshToken` cookie.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RefreshTokenInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Access token refreshed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RefreshTokenResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Refresh token is required",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid, expired, revoked or missing refresh token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/logout": {
+      "post": {
+        "tags": ["Users"],
+        "summary": "Logout",
+        "description": "Revokes the given refresh token server-side (deletes its record). The refresh token may also be supplied via the httpOnly `refreshToken` cookie. Access tokens are stateless and remain valid until they naturally expire.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LogoutInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Logged out successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LogoutResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Refresh token is required",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/products": {
+      "get": {
+        "tags": ["Products"],
+        "summary": "Get all products",
+        "description": "Returns all products, newest first. Supports optional `category` (exact match) and `search` (case-insensitive name substring) filters.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Filter by exact category name"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Case-insensitive substring search on product name"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Products fetched successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProductListResponse" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Products"],
+        "summary": "Create a product",
+        "description": "Admin only. Creates a new product. The access token may also be supplied via the httpOnly `accessToken` cookie.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ProductInput" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Product created successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProductResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Name, price and category are required, or price/stock are negative",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authorized, no/invalid access token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin access required",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/products/{id}": {
+      "get": {
+        "tags": ["Products"],
+        "summary": "Get a product by id",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "MongoDB ObjectId of the product"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Product fetched successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProductResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid product identifier",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Product not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["Products"],
+        "summary": "Update a product",
+        "description": "Admin only. Partially updates a product (all fields optional).",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "MongoDB ObjectId of the product"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ProductUpdate" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Product updated successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProductResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid product data or identifier",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authorized, no/invalid access token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin access required",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Product not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Products"],
+        "summary": "Delete a product",
+        "description": "Admin only. Deletes a product and returns its id.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "MongoDB ObjectId of the product"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Product deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeleteProductResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid product identifier",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authorized, no/invalid access token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin access required",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Product not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cart": {
+      "get": {
+        "tags": ["Cart"],
+        "summary": "Get the current user's cart",
+        "description": "Returns the logged-in user's cart with populated product info (name, price, stock). If no cart exists yet, returns `{ \"items\": [] }`.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Cart fetched successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CartResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authorized, no/invalid access token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Cart"],
+        "summary": "Add an item to the cart",
+        "description": "Adds a product to the logged-in user's cart. If the product is already in the cart its quantity is increased. Returns the populated cart.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AddCartItemInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Item added to cart successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CartResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid cart data, invalid product identifier, or insufficient stock",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authorized, no/invalid access token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Product not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/orders": {
+      "post": {
+        "tags": ["Orders"],
+        "summary": "Place an order",
+        "description": "Places an order from the current cart: snapshots prices, decrements product stock, clears the cart. No request body is required.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "201": {
+            "description": "Order placed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OrderResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Cart is empty, invalid product data, or insufficient stock",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authorized, no/invalid access token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "A product in the cart no longer exists",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": ["Orders"],
+        "summary": "Get order history",
+        "description": "Returns the logged-in user's orders, newest first, with populated product info (name, price).",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Order history fetched successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OrderListResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authorized, no/invalid access token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Access token returned at register/login/refresh. Sent as `Authorization: Bearer <token>`."
+      }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "description": "Sanitized user info returned at register/login (never includes the password hash).",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "email": { "type": "string", "format": "email" },
+          "role": { "type": "string", "enum": ["user", "admin"] }
+        },
+        "required": ["id", "name", "email", "role"]
+      },
+      "AuthData": {
+        "type": "object",
+        "properties": {
+          "user": { "$ref": "#/components/schemas/User" },
+          "accessToken": { "type": "string", "description": "Short-lived JWT (default 15m)" },
+          "refreshToken": { "type": "string", "description": "Long-lived JWT (default 30d), one-time use due to rotation" }
+        },
+        "required": ["user", "accessToken", "refreshToken"]
+      },
+      "RefreshData": {
+        "type": "object",
+        "properties": {
+          "accessToken": { "type": "string" },
+          "refreshToken": { "type": "string" }
+        },
+        "required": ["accessToken", "refreshToken"]
+      },
+      "Product": {
+        "type": "object",
+        "description": "A product as stored and returned by the API (raw document shape, `_id` key).",
+        "properties": {
+          "_id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "price": { "type": "number", "minimum": 0 },
+          "category": { "type": "string" },
+          "stock": { "type": "integer", "minimum": 0 },
+          "imageUrl": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["_id", "name", "description", "price", "category", "stock", "imageUrl", "createdAt", "updatedAt"]
+      },
+      "ProductInput": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "price": { "type": "number", "minimum": 0 },
+          "category": { "type": "string" },
+          "stock": { "type": "integer", "minimum": 0 },
+          "imageUrl": { "type": "string" }
+        },
+        "required": ["name", "price", "category"]
+      },
+      "ProductUpdate": {
+        "type": "object",
+        "description": "Partial update — all fields optional.",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "price": { "type": "number", "minimum": 0 },
+          "category": { "type": "string" },
+          "stock": { "type": "integer", "minimum": 0 },
+          "imageUrl": { "type": "string" }
+        }
+      },
+      "CartItemProduct": {
+        "type": "object",
+        "description": "Populated product info inside cart items (`name price stock` projection).",
+        "properties": {
+          "_id": { "type": "string" },
+          "name": { "type": "string" },
+          "price": { "type": "number" },
+          "stock": { "type": "integer" }
+        },
+        "required": ["_id", "name", "price", "stock"]
+      },
+      "CartItem": {
+        "type": "object",
+        "properties": {
+          "product": { "$ref": "#/components/schemas/CartItemProduct" },
+          "quantity": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["product", "quantity"]
+      },
+      "Cart": {
+        "type": "object",
+        "description": "The user's cart. When no cart exists the API returns `{ \"items\": [] }`, so only `items` is required.",
+        "properties": {
+          "_id": { "type": "string" },
+          "user": { "type": "string" },
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/CartItem" }
+          },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["items"]
+      },
+      "OrderProductRef": {
+        "type": "object",
+        "description": "Populated product info inside order items (`name price` projection).",
+        "properties": {
+          "_id": { "type": "string" },
+          "name": { "type": "string" },
+          "price": { "type": "number" }
+        },
+        "required": ["_id", "name", "price"]
+      },
+      "OrderItem": {
+        "type": "object",
+        "description": "Order line: the product reference plus the price snapshot at purchase time.",
+        "properties": {
+          "product": { "$ref": "#/components/schemas/OrderProductRef" },
+          "quantity": { "type": "integer", "minimum": 1 },
+          "price": { "type": "number" }
+        },
+        "required": ["product", "quantity", "price"]
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "_id": { "type": "string" },
+          "user": { "type": "string" },
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/OrderItem" }
+          },
+          "totalAmount": { "type": "number" },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "processing", "shipped", "delivered", "cancelled"]
+          },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["_id", "user", "items", "totalAmount", "status", "createdAt", "updatedAt"]
+      },
+      "RegisterInput": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "email": { "type": "string", "format": "email" },
+          "password": { "type": "string", "format": "password", "minLength": 6 }
+        },
+        "required": ["name", "email", "password"]
+      },
+      "LoginInput": {
+        "type": "object",
+        "properties": {
+          "email": { "type": "string", "format": "email" },
+          "password": { "type": "string", "format": "password", "minLength": 6 }
+        },
+        "required": ["email", "password"]
+      },
+      "RefreshTokenInput": {
+        "type": "object",
+        "properties": {
+          "refreshToken": { "type": "string" }
+        },
+        "required": ["refreshToken"]
+      },
+      "LogoutInput": {
+        "type": "object",
+        "properties": {
+          "refreshToken": { "type": "string" }
+        },
+        "required": ["refreshToken"]
+      },
+      "AddCartItemInput": {
+        "type": "object",
+        "properties": {
+          "productId": { "type": "string" },
+          "quantity": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["productId", "quantity"]
+      },
+      "RegisterResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "enum": [true] },
+          "statusCode": { "type": "integer", "enum": [201] },
+          "data": { "$ref": "#/components/schemas/AuthData" },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "statusCode", "data", "message"]
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "enum": [true] },
+          "statusCode": { "type": "integer", "enum": [200] },
+          "data": { "$ref": "#/components/schemas/AuthData" },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "statusCode", "data", "message"]
+      },
+      "RefreshTokenResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "enum": [true] },
+          "statusCode": { "type": "integer", "enum": [200] },
+          "data": { "$ref": "#/components/schemas/RefreshData" },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "statusCode", "data", "message"]
+      },
+      "LogoutResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "enum": [true] },
+          "statusCode": { "type": "integer", "enum": [200] },
+          "data": { "type": "object", "nullable": true },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "statusCode", "data", "message"]
+      },
+      "ProductListResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "enum": [true] },
+          "statusCode": { "type": "integer", "enum": [200] },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Product" }
+          },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "statusCode", "data", "message"]
+      },
+      "ProductResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "enum": [true] },
+          "statusCode": { "type": "integer" },
+          "data": { "$ref": "#/components/schemas/Product" },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "statusCode", "data", "message"]
+      },
+      "DeleteProductResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "enum": [true] },
+          "statusCode": { "type": "integer", "enum": [200] },
+          "data": {
+            "type": "object",
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"]
+          },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "statusCode", "data", "message"]
+      },
+      "CartResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "enum": [true] },
+          "statusCode": { "type": "integer", "enum": [200] },
+          "data": { "$ref": "#/components/schemas/Cart" },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "statusCode", "data", "message"]
+      },
+      "OrderResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "enum": [true] },
+          "statusCode": { "type": "integer", "enum": [201] },
+          "data": { "$ref": "#/components/schemas/Order" },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "statusCode", "data", "message"]
+      },
+      "OrderListResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "enum": [true] },
+          "statusCode": { "type": "integer", "enum": [200] },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Order" }
+          },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "statusCode", "data", "message"]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "Error envelope returned for any non-2xx response.",
+        "properties": {
+          "success": { "type": "boolean", "enum": [false] },
+          "message": { "type": "string" }
+        },
+        "required": ["success", "message"]
+      }
+    }
+  }
+}

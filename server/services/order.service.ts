@@ -40,6 +40,8 @@ class OrderService extends OrderContract {
       totalAmount,
     });
 
+    await order.populate("items.product", "name price");
+
     await cartRepository.clearByUserId(userId);
 
     return order;

@@ -20,10 +20,10 @@ Route  →  Controller  →  Service  →  Repository  →  (Model)
 
 ```
 ecommerce-backend-ts/
-├── server entry: src/server.ts
+├── server entry: server/server.ts
 ├── tsconfig.json
 ├── .env.example
-└── src/
+└── server/
     ├── app.ts
     ├── types/
     │   ├── dto.types.ts          # shared request/response DTOs
@@ -72,7 +72,7 @@ ecommerce-backend-ts/
         └── token.util.ts           # access/refresh token generation, verification, hashing
 ```
 
-## The 12 APIs
+## The 13 APIs
 
 | # | Method | Endpoint                    | Auth        | Description                          |
 |---|--------|-------------------------------|-------------|---------------------------------------|
@@ -86,8 +86,9 @@ ecommerce-backend-ts/
 | 8 | PUT    | `/api/products/:id`            | Admin only  | Update a product                      |
 | 9 | DELETE | `/api/products/:id`            | Admin only  | Delete a product                      |
 | 10| POST   | `/api/cart`                     | Logged-in user | Add an item to the cart            |
-| 11| POST   | `/api/orders`                   | Logged-in user | Place an order from the current cart |
-| 12| GET    | `/api/orders`                   | Logged-in user | Get the logged-in user's order history |
+| 11| GET    | `/api/cart`                     | Logged-in user | Get the current user's cart        |
+| 12| POST   | `/api/orders`                   | Logged-in user | Place an order from the current cart |
+| 13| GET    | `/api/orders`                   | Logged-in user | Get the logged-in user's order history |
 
 \* `/refresh-token` and `/logout` don't require the `Authorization` header — they authenticate via the refresh token in the request body instead.
 
@@ -98,6 +99,72 @@ ecommerce-backend-ts/
 - **Rotation** — every call to `/refresh-token` deletes the old refresh token record and issues a brand-new access + refresh pair. This means a stolen refresh token can be replayed at most once before it stops working, and if the legitimate client also tries to use the now-deleted token, that's a signal of token theft.
 - **Logout** — deletes the given refresh token's record from the DB. The corresponding access token remains valid until it naturally expires (since access tokens aren't tracked in the DB), which is the standard, expected tradeoff of stateless access tokens.
 - **Auto-cleanup** — the `RefreshToken` collection has a MongoDB TTL index on `expiresAt`, so expired sessions are deleted automatically without a cron job.
+
+## API Documentation (Scalar)
+
+Interactive OpenAPI documentation is served by the backend at:
+
+- **Scalar UI**: `http://localhost:5000/api-docs`
+- **Raw spec**: `http://localhost:5000/openapi.json`
+
+The OpenAPI specification is the single source of truth at `server/openapi/openapi.json`.
+It documents all 13 endpoints, the `{ success, statusCode, data, message }` response
+envelope, error responses, and every model.
+
+## Frontend (`client/`)
+
+Minimalist black & white React storefront (Vite + React + TypeScript) running on
+`http://localhost:3000` by default (matches the backend's `CLIENT_ORIGIN`).
+
+**Pages**
+
+| Route          | Description                                        |
+|----------------|----------------------------------------------------|
+| `/`            | Product catalog with search + category filter      |
+| `/products/:id`| Product detail with add-to-cart                    |
+| `/login`       | Login                                              |
+| `/register`    | Register                                           |
+| `/cart`        | Cart overview + place order (protected)            |
+| `/orders`      | Order history (protected)                          |
+| `/admin`       | Product CRUD (admin only)                          |
+
+**Setup**
+
+```bash
+cd client
+npm install
+cp .env.example .env      # optional: set VITE_API_URL
+npm run dev               # http://localhost:3000
+```
+
+**Authentication**
+
+- Login/register responses contain `accessToken` + `refreshToken`, stored locally.
+- An Axios request interceptor attaches `Authorization: Bearer <accessToken>` to
+  protected endpoints only (auth endpoints are exempt).
+- A response interceptor handles `401` by calling `/api/users/refresh-token` (single
+  in-flight refresh — concurrent 401s share one call), retries the original request
+  once with the new token, and on refresh failure clears the session and redirects
+  to `/login`.
+
+**Generated API client**
+
+The TypeScript client in `client/src/api/generated/` is generated from the OpenAPI
+spec with `@hey-api/openapi-ts` + `@hey-api/client-axios` (axios-based):
+
+```bash
+cd client
+npm run generate:api
+```
+
+Regeneration is safe by design — all custom code lives outside `generated/`:
+
+- `client/src/api/heyApiConfig.ts` — initial client config (base URL), wired into
+  the generated client via `runtimeConfigPath` in `openapi-ts.config.ts`.
+- `client/src/api/httpClient.ts` — Axios interceptors (Bearer attach, refresh/retry).
+- `client/src/api/tokenStore.ts`, `auth/AuthContext.tsx` — session state.
+- `client/src/api/api.ts` — the app's single import surface (never import from
+  `generated/` directly).
 
 ## Setup
 
